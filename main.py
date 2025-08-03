@@ -446,7 +446,8 @@ async def pm25_monitor_loop():
 
 async def main():
     # Start web server, CO2 monitor, and PM2.5 monitor concurrently
-    await asyncio.gather(start_web_server(), co2_monitor_loop(), pm25_monitor_loop())
+    # await asyncio.gather(start_web_server(), co2_monitor_loop(), pm25_monitor_loop())
+    await asyncio.gather(start_web_server(), co2_monitor_loop())
 
 
 # Run the main async loop
