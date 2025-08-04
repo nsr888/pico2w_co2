@@ -1,5 +1,6 @@
 import asyncio
 import gc
+import utime
 import os
 import time
 
@@ -72,13 +73,15 @@ station.config(pm=0xA11140)
 
 # Read SSID from password_work.txt file
 try:
-    with open("password_home.txt", "r") as f:
+    with open("password_work.txt", "r") as f:
         lines = f.readlines()
         if len(lines) >= 2:
             SSID = lines[0].strip()
             PASSWORD = lines[1].strip()
         else:
-            print("Error: password_work.txt must contain SSID on first line and password on second line")
+            print(
+                "Error: password_work.txt must contain SSID on first line and password on second line"
+            )
             raise SystemExit
 except OSError as e:
     print(f"Error reading password_work.txt: {e}")
@@ -106,12 +109,112 @@ last_measurement_time = None
 current_pm25 = None
 last_pm25_fetch_time = None
 
+# Global variable for tracking last weekly log write time
+last_weekly_log_time = None
+
 app = Microdot()
 
 
 def get_timestamp():
     dt = rtc.datetime()
     return f"{dt[0]:04d}-{dt[1]:02d}-{dt[2]:02d} {dt[4]:02d}:{dt[5]:02d}:{dt[6]:02d}"
+
+
+def get_week_number(year, month, day):
+    """
+    Calculate ISO week number for a given date.
+    Compatible with MicroPython.
+    """
+    t = utime.mktime((year, month, day, 0, 0, 0, 0, 0))
+
+    # utime.localtime(t) returns a tuple: (year, month, mday, hour, minute, second, weekday, yearday)
+    # weekday is 0 for Monday, 6 for Sunday.
+    # yearday is 1-366
+    date_tuple = utime.localtime(t)
+    year, month, day, _, _, _, weekday, yearday = date_tuple
+
+    # ISO 8601 weekday is 1 for Monday, 7 for Sunday
+    iso_weekday = weekday + 1
+
+    # The core ISO week number algorithm
+    # See: https://en.wikipedia.org/wiki/ISO_week_date#Calculating_the_week_number_from_an_ordinal_date
+    week_number = (yearday - iso_weekday + 10) // 7
+
+    if week_number < 1:
+        # This date belongs to the last week of the previous year
+        return get_week_number(year - 1, 12, 31)
+    if (
+        week_number == 53
+        and utime.localtime(utime.mktime((year, 12, 31, 0, 0, 0, 0, 0)))[6] < 3
+    ):
+        # If Dec 31st is a Mon, Tue, or Wed, then it's week 1 of the next year
+        return 1
+
+    return week_number
+
+
+def get_weekly_log_filename():
+    """Generate weekly log filename with week number"""
+    dt = rtc.datetime()
+    year, month, day = dt[0], dt[1], dt[2]
+    week_number = get_week_number(year, month, day)
+    return f"/sd/readings/week{week_number}.csv"
+
+
+def should_log_weekly():
+    """Check if we should write to weekly log (hourly granularity)"""
+    global last_weekly_log_time
+
+    if last_weekly_log_time is None:
+        return True
+
+    dt = rtc.datetime()
+    current_time = (dt[0], dt[1], dt[2], dt[4])  # year, month, day, hour
+
+    # Parse last log time
+    try:
+        last_parts = last_weekly_log_time.split(" ")[0].split(
+            "-"
+        ) + last_weekly_log_time.split(" ")[1].split(":")
+        last_time = (
+            int(last_parts[0]),
+            int(last_parts[1]),
+            int(last_parts[2]),
+            int(last_parts[3]),
+        )  # year, month, day, hour
+
+        # Check if at least one hour has passed
+        if (
+            current_time[0] > last_time[0]
+            or current_time[1] > last_time[1]  # different year
+            or current_time[2] > last_time[2]  # different month
+            or current_time[3] != last_time[3]  # different day
+        ):  # different hour
+            return True
+    except:
+        # If parsing fails, assume we should log
+        return True
+
+    return False
+
+
+def ensure_weekly_log_file():
+    """Ensure weekly log file exists with header"""
+    # Create readings directory if it doesn't exist
+    try:
+        os.mkdir("/sd/readings")
+    except OSError as e:
+        if e.errno != 17:  # 17 is EEXIST (directory already exists)
+            raise
+
+    filename = get_weekly_log_filename()
+    try:
+        with open(filename, "r") as f:
+            pass
+    except OSError:
+        with open(filename, "w") as f:
+            f.write("time,co2\n")
+    return filename
 
 
 def fetch_pm25_data():
@@ -170,7 +273,9 @@ async def index(request):
 
         for file in files:
             try:
-                if file.startswith("readings_") and file.endswith(".csv"):
+                if (
+                    file.startswith("readings_") or file.startswith("week")
+                ) and file.endswith(".csv"):
                     stat = os.stat(f"/sd/readings/{file}")
                     size = stat[6]
                     log_files.append((file, size))
@@ -202,7 +307,9 @@ async def index(request):
         html += f"<li>PM2.5 last updated: {last_pm25_fetch_time}</li>"
         html += "<li>PM2.5 data source: <a href='https://explore.openaq.org/locations/663499'>OpenAQ</a></li>"
         html += "<li>PM2.5 data is updated every hour.</li>"
-        html += "<li>Values greater than 35 &micro;g/m&sup3; are considered unhealthy.</li>"
+        html += (
+            "<li>Values greater than 35 &micro;g/m&sup3; are considered unhealthy.</li>"
+        )
         html += "</ul>"
     else:
         html += "<p>PM2.5 data: Waiting for first reading...</p>"
@@ -218,7 +325,11 @@ async def index(request):
         html += "<td>"
         html += f"<a href='/download/{filename}'>Download</a> | "
         html += f"<a href='/delete/{filename}' onclick=\"return confirm('Are you sure?')\">Delete</a> | "
-        html += f"<a href='/spark/{filename}'>Sparkline</a>"
+        # Use different visualization for weekly files
+        if filename.startswith("week"):
+            html += f"<a href='/spark/{filename}'>Weekly Sparkline</a>"
+        else:
+            html += f"<a href='/spark/{filename}'>Daily Sparkline</a>"
         html += "</td>"
         html += "</tr>"
 
@@ -282,10 +393,129 @@ async def spark(request, filename):
         data.append([t, int(c)])
 
     json_data = ujson.dumps(data)
-    date_part = filename[9:17]
-    pretty_date = f"{date_part[0:4]}-{date_part[4:6]}-{date_part[6:8]}"
 
-    html = f"""<!doctype html>
+    # Handle different filename formats for pretty date display
+    if filename.startswith("readings_"):
+        date_part = filename[9:17]
+        pretty_date = f"{date_part[0:4]}-{date_part[4:6]}-{date_part[6:8]}"
+    elif filename.startswith("week"):
+        # For weekly files, just show the filename without extension
+        pretty_date = filename[:-4]  # Remove .csv extension
+    else:
+        pretty_date = filename[:-4]  # Fallback: remove .csv extension
+
+    # Use different visualization for weekly files
+    if filename.startswith("week"):
+        html = f"""<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8"/>
+    <title>CO2 {pretty_date}</title>
+    <style>
+      body{{margin:0;background:#fafafa;font-family:sans-serif}}
+      svg{{display:block;margin:20px auto;background:#fff;border:1px solid #ddd}}
+      polyline{{fill:none;stroke:#4caf50;stroke-width:2}}
+      text{{font-size:12px;fill:#333}}
+    </style>
+  </head>
+  <body>
+    <svg id="spark" width="1000" height="600"></svg>
+    <script>
+      (function(){{
+        const data = {json_data};
+        const svg = document.getElementById("spark");
+        const W = +svg.getAttribute("width"), H = +svg.getAttribute("height");
+        const marginX=80, marginY=40, innerW=W-2*marginX, innerH=H-2*marginY;
+
+        // Fixed CO2 reference lines
+        const co2Levels = [500, 1000, 1500, 2000];
+        const maxValue = 2000;
+        const minValue = 0;
+
+        // Add horizontal reference lines for CO2 levels
+        const refLines = [];
+        co2Levels.forEach(level => {{
+          const y = marginY + innerH - ((level - minValue) / (maxValue - minValue)) * innerH;
+          const line = document.createElementNS(svg.namespaceURI, "line");
+          line.setAttribute("x1", marginX);
+          line.setAttribute("y1", y);
+          line.setAttribute("x2", marginX + innerW);
+          line.setAttribute("y2", y);
+          line.setAttribute("stroke", "#ccc");
+          line.setAttribute("stroke-width", 1);
+          line.setAttribute("stroke-dasharray", "3,3");
+          refLines.push(line);
+
+          // Add labels for reference lines
+          const label = document.createElementNS(svg.namespaceURI, "text");
+          label.setAttribute("x", marginX + innerW + 5);
+          label.setAttribute("y", y + 4);
+          label.setAttribute("fill", "#666");
+          label.textContent = `${{level}}ppm`;
+          refLines.push(label);
+        }});
+
+
+        // Generate a complete date range for the x-axis
+        const parseDate = (dateStr) => new Date(dateStr.split(' ')[0] + 'T00:00:00Z');
+        const formatDate = (date) => date.toISOString().split('T')[0];
+
+        const firstDate = parseDate(data[0][0]);
+        const lastDate = parseDate(data[data.length - 1][0]);
+        
+        const fullDateRange = [];
+        for (let d = new Date(firstDate); d <= lastDate; d.setDate(d.getDate() + 1)) {{
+            fullDateRange.push(formatDate(new Date(d)));
+        }}
+        const numDays = fullDateRange.length;
+
+        // Create x-axis labels for the full date range
+        const dateLabels = [];
+        fullDateRange.forEach((dateStr, i) => {{
+          const x = marginX + (i * innerW / (numDays - 1 || 1));
+          const txt = document.createElementNS(svg.namespaceURI,"text");
+          txt.setAttribute("x", x);
+          txt.setAttribute("y", H-15);
+          txt.setAttribute("text-anchor", "middle");
+          txt.textContent = dateStr;
+          dateLabels.push(txt);
+        }});
+
+        // Map measurements to timeline positions using the full date range
+        const pts = data.map(d => {{
+          const datePart = d[0].split(' ')[0];
+          const dateIndex = fullDateRange.indexOf(datePart);
+          if (dateIndex === -1) return ''; // Should not happen with this logic, but safe
+          
+          const [hour, minute, second] = d[0].split(' ')[1].split(':').map(Number);
+          const timeFraction = (hour * 3600 + minute * 60 + second) / 86400;
+          
+          const x = marginX + ((dateIndex + timeFraction) * innerW / (numDays - 1 || 1));
+          const y = marginY + innerH - ((d[1] - minValue) / (maxValue - minValue)) * innerH;
+          return `${{x}},${{y}}`;
+        }}).join(" ");
+
+        svg.innerHTML = `<g>
+          ${{refLines.map(line => line.outerHTML).join('')}}
+          <polyline points="${{pts}}" stroke="#4caf50" stroke-width="2" fill="none"/>
+        </g>`;
+
+        const title = document.createElementNS(svg.namespaceURI,"text");
+        title.setAttribute("x", W/2);
+        title.setAttribute("y", 25);
+        title.setAttribute("text-anchor", "middle");
+        title.textContent = `CO₂ concentration (ppm) - {pretty_date}`;
+        svg.appendChild(title);
+
+        // Add date labels
+        dateLabels.forEach(label => svg.appendChild(label));
+      }})();
+    </script>
+  </body>
+</html>"""
+    else:
+        # Original daily file visualization
+        html = f"""<!doctype html>
 <html>
   <head>
     <meta charset="utf-8"/>
@@ -419,10 +649,19 @@ async def co2_monitor_loop(max_retries: int = 10):
         current_co2 = co2  # Update global variable
         print(f"CO2: {co2} ppm")
 
-        # Log to SD card in hourly rotated file
+        # Log to SD card in daily rotated file
         log_filename = ensure_log_file()
         with open(log_filename, "a") as f:
             f.write(f"{ts},{co2}\n")
+
+        # Log to weekly file with hourly granularity
+        if should_log_weekly():
+            weekly_filename = ensure_weekly_log_file()
+            with open(weekly_filename, "a") as f:
+                f.write(f"{ts},{co2}\n")
+            # Update last weekly log time
+            global last_weekly_log_time
+            last_weekly_log_time = ts
 
         # Update last measurement time
         global last_measurement_time
