@@ -1,0 +1,49 @@
+# Generated HTML files from development/testing
+*.html
+
+# Compiled Python bytecode
+__pycache__/
+utemplate/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# MicroPython compiled templates (keep source .tpl files)
+# Note: *_tpl.py files are needed for MicroPython but generated from .tpl
+
+# Temporary files
+*.tmp
+*.temp
+*~
+
+# IDE/Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Credentials and secrets
+password*.txt
+
+# SD card data (if synced locally)
+sd/
+readings/
+*.csv
+
+# Logs
+*.log
+
+# Development/test data
+test_data/
+fake_data/

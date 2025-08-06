@@ -6,13 +6,13 @@ import time
 
 import network
 import ujson
-import urequests
 from machine import I2C, SPI, Pin
 
 import sdcard
 from ds3231 import DS3231
 from microdot import Microdot, send_file
 from scd4x import SCD4X
+from utemplate.source import Loader
 
 _stats = {
     "requests_total": 0,
@@ -105,14 +105,13 @@ print("IP address:", station.ifconfig())
 current_co2 = None
 last_measurement_time = None
 
-# Global variables for PM2.5 pollution data
-current_pm25 = None
-last_pm25_fetch_time = None
-
 # Global variable for tracking last weekly log write time
 last_weekly_log_time = None
 
 app = Microdot()
+
+# Initialize template loader
+template_loader = Loader(None, "templates")
 
 
 def get_timestamp():
@@ -217,37 +216,6 @@ def ensure_weekly_log_file():
     return filename
 
 
-def fetch_pm25_data():
-    """Fetch PM2.5 data from OpenAQ API"""
-    global current_pm25, last_pm25_fetch_time
-
-    try:
-        url = "https://api.openaq.org/v3/sensors/3646910"
-        headers = {
-            "X-API-Key": "cd813fb1d25c3b7e82abb94bb7992e68ad55e8208b8a1041b4834f9fac4b9f5d"
-        }
-
-        response = urequests.get(url, headers=headers)
-
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("results") and len(data["results"]) > 0:
-                latest = data["results"][0].get("latest")
-                if latest:
-                    current_pm25 = round(latest["value"])
-                    last_pm25_fetch_time = latest["datetime"]["local"]
-                    print(
-                        f"PM2.5 updated: {current_pm25} µg/m³ at {last_pm25_fetch_time}"
-                    )
-                    return True
-
-        response.close()
-
-    except Exception as e:
-        print(f"Error fetching PM2.5 data: {e}")
-
-    return False
-
 
 def list_files(directory):
     """List all files in a directory"""
@@ -286,55 +254,15 @@ async def index(request):
         pass
 
     log_files.sort(reverse=True)  # Show newest first
-
-    html = "<html><head><title>CO2 Monitor</title></head><body>"
-    html += "<h1>CO2 Monitor</h1>"
-    if current_co2 is not None:
-        html += f"<p>Current CO2 level: <strong><meter id='tempMeter' value='{current_co2}' min='400' max='1500'>{current_co2}</meter> {current_co2} ppm</strong></p>"
-        html += "<ul>"
-        html += f"<li>Current time: {get_timestamp()}</li>"
-        html += f"<li>Last updated: {last_measurement_time}</li>"
-        html += "<li>CO2 sensor: <a href='https://sensirion.com/products/catalog/SCD40'>SCD40</a></li>"
-        html += "<li>Values greater than 1000 ppm are considered unhealthy.</li>"
-        html += "</ul>"
-    else:
-        html += "<p>Waiting for first reading...</p>"
-
-    # Add PM2.5 pollution data
-    if current_pm25 is not None:
-        html += f"<p>Current PM2.5: <strong><meter id='tempMeter' value='{current_pm25}' min='0' max='100'>{current_pm25}</meter> {current_pm25} &micro;g/m&sup3;</strong></p>"
-        html += "<ul>"
-        html += f"<li>PM2.5 last updated: {last_pm25_fetch_time}</li>"
-        html += "<li>PM2.5 data source: <a href='https://explore.openaq.org/locations/663499'>OpenAQ</a></li>"
-        html += "<li>PM2.5 data is updated every hour.</li>"
-        html += (
-            "<li>Values greater than 35 &micro;g/m&sup3; are considered unhealthy.</li>"
-        )
-        html += "</ul>"
-    else:
-        html += "<p>PM2.5 data: Waiting for first reading...</p>"
-    html += "<p><a href='/co2'>JSON API</a></p>"
-    html += "<h2>Log Files</h2>"
-    html += "<table border='1' cellpadding='5'>"
-    html += "<tr><th>Filename</th><th>Size</th><th>Actions</th></tr>"
-
-    for filename, size in log_files:
-        html += "<tr>"
-        html += f"<td>{filename}</td>"
-        html += f"<td>{size} bytes</td>"
-        html += "<td>"
-        html += f"<a href='/download/{filename}'>Download</a> | "
-        html += f"<a href='/delete/{filename}' onclick=\"return confirm('Are you sure?')\">Delete</a> | "
-        # Use different visualization for weekly files
-        if filename.startswith("week"):
-            html += f"<a href='/spark/{filename}'>Weekly Sparkline</a>"
-        else:
-            html += f"<a href='/spark/{filename}'>Daily Sparkline</a>"
-        html += "</td>"
-        html += "</tr>"
-
-    html += "</table>"
-    html += "</body></html>"
+    
+    # Render template
+    template = template_loader.load("index.tpl")
+    html = "".join(template(
+        current_co2=current_co2,
+        last_measurement_time=last_measurement_time or "",
+        current_time=get_timestamp(),
+        log_files=log_files
+    ))
 
     return html, 200, {"Content-Type": "text/html"}
 
@@ -404,207 +332,14 @@ async def spark(request, filename):
     else:
         pretty_date = filename[:-4]  # Fallback: remove .csv extension
 
-    # Use different visualization for weekly files
-    if filename.startswith("week"):
-        html = f"""<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8"/>
-    <title>CO2 {pretty_date}</title>
-    <style>
-      body{{margin:0;background:#fafafa;font-family:sans-serif}}
-      svg{{display:block;margin:20px auto;background:#fff;border:1px solid #ddd}}
-      polyline{{fill:none;stroke:#4caf50;stroke-width:2}}
-      text{{font-size:12px;fill:#333}}
-    </style>
-  </head>
-  <body>
-    <svg id="spark" width="1000" height="600"></svg>
-    <script>
-      (function(){{
-        const data = {json_data};
-        const svg = document.getElementById("spark");
-        const W = +svg.getAttribute("width"), H = +svg.getAttribute("height");
-        const marginX=80, marginY=40, innerW=W-2*marginX, innerH=H-2*marginY;
-
-        // Fixed CO2 reference lines
-        const co2Levels = [500, 1000, 1500, 2000];
-        const maxValue = 2000;
-        const minValue = 0;
-
-        // Add horizontal reference lines for CO2 levels
-        const refLines = [];
-        co2Levels.forEach(level => {{
-          const y = marginY + innerH - ((level - minValue) / (maxValue - minValue)) * innerH;
-          const line = document.createElementNS(svg.namespaceURI, "line");
-          line.setAttribute("x1", marginX);
-          line.setAttribute("y1", y);
-          line.setAttribute("x2", marginX + innerW);
-          line.setAttribute("y2", y);
-          line.setAttribute("stroke", "#ccc");
-          line.setAttribute("stroke-width", 1);
-          line.setAttribute("stroke-dasharray", "3,3");
-          refLines.push(line);
-
-          // Add labels for reference lines
-          const label = document.createElementNS(svg.namespaceURI, "text");
-          label.setAttribute("x", marginX + innerW + 5);
-          label.setAttribute("y", y + 4);
-          label.setAttribute("fill", "#666");
-          label.textContent = `${{level}}ppm`;
-          refLines.push(label);
-        }});
-
-
-        // Generate a complete date range for the x-axis
-        const parseDate = (dateStr) => new Date(dateStr.split(' ')[0] + 'T00:00:00Z');
-        const formatDate = (date) => date.toISOString().split('T')[0];
-
-        const firstDate = parseDate(data[0][0]);
-        const lastDate = parseDate(data[data.length - 1][0]);
-        
-        const fullDateRange = [];
-        for (let d = new Date(firstDate); d <= lastDate; d.setDate(d.getDate() + 1)) {{
-            fullDateRange.push(formatDate(new Date(d)));
-        }}
-        const numDays = fullDateRange.length;
-
-        // Create x-axis labels for the full date range
-        const dateLabels = [];
-        fullDateRange.forEach((dateStr, i) => {{
-          const x = marginX + (i * innerW / (numDays - 1 || 1));
-          const txt = document.createElementNS(svg.namespaceURI,"text");
-          txt.setAttribute("x", x);
-          txt.setAttribute("y", H-15);
-          txt.setAttribute("text-anchor", "middle");
-          txt.textContent = dateStr;
-          dateLabels.push(txt);
-        }});
-
-        // Map measurements to timeline positions using the full date range
-        const pts = data.map(d => {{
-          const datePart = d[0].split(' ')[0];
-          const dateIndex = fullDateRange.indexOf(datePart);
-          if (dateIndex === -1) return ''; // Should not happen with this logic, but safe
-          
-          const [hour, minute, second] = d[0].split(' ')[1].split(':').map(Number);
-          const timeFraction = (hour * 3600 + minute * 60 + second) / 86400;
-          
-          const x = marginX + ((dateIndex + timeFraction) * innerW / (numDays - 1 || 1));
-          const y = marginY + innerH - ((d[1] - minValue) / (maxValue - minValue)) * innerH;
-          return `${{x}},${{y}}`;
-        }}).join(" ");
-
-        svg.innerHTML = `<g>
-          ${{refLines.map(line => line.outerHTML).join('')}}
-          <polyline points="${{pts}}" stroke="#4caf50" stroke-width="2" fill="none"/>
-        </g>`;
-
-        const title = document.createElementNS(svg.namespaceURI,"text");
-        title.setAttribute("x", W/2);
-        title.setAttribute("y", 25);
-        title.setAttribute("text-anchor", "middle");
-        title.textContent = `CO₂ concentration (ppm) - {pretty_date}`;
-        svg.appendChild(title);
-
-        // Add date labels
-        dateLabels.forEach(label => svg.appendChild(label));
-      }})();
-    </script>
-  </body>
-</html>"""
-    else:
-        # Original daily file visualization
-        html = f"""<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8"/>
-    <title>CO2 {pretty_date}</title>
-    <style>
-      body{{margin:0;background:#fafafa;font-family:sans-serif}}
-      svg{{display:block;margin:20px auto;background:#fff;border:1px solid #ddd}}
-      polyline{{fill:none;stroke:#4caf50;stroke-width:2}}
-      text{{font-size:12px;fill:#333}}
-    </style>
-  </head>
-  <body>
-    <svg id="spark" width="1000" height="600"></svg>
-    <script>
-      (function(){{
-        const data = {json_data};
-        const svg = document.getElementById("spark");
-        const W = +svg.getAttribute("width"), H = +svg.getAttribute("height");
-        const marginX=60, marginY=40, innerW=W-2*marginX, innerH=H-2*marginY;
-
-        // Fixed CO2 reference lines
-        const co2Levels = [500, 1000, 1500, 2000];
-        const maxValue = 2000;
-        const minValue = 0;
-
-        // Create 24-hour x-axis
-        const hourLabels = [];
-        for (let i = 0; i < 24; i++) {{
-          const x = marginX + (i * innerW / 23);
-          const txt = document.createElementNS(svg.namespaceURI,"text");
-          txt.setAttribute("x", x);
-          txt.setAttribute("y", H-15);
-          txt.setAttribute("text-anchor", "middle");
-          txt.textContent = `${{i.toString().padStart(2, '0')}}:00`;
-          hourLabels.push(txt);
-        }}
-
-        // Add horizontal reference lines for CO2 levels
-        const refLines = [];
-        co2Levels.forEach(level => {{
-          const y = marginY + innerH - ((level - minValue) / (maxValue - minValue)) * innerH;
-          const line = document.createElementNS(svg.namespaceURI, "line");
-          line.setAttribute("x1", marginX);
-          line.setAttribute("y1", y);
-          line.setAttribute("x2", marginX + innerW);
-          line.setAttribute("y2", y);
-          line.setAttribute("stroke", "#ccc");
-          line.setAttribute("stroke-width", 1);
-          line.setAttribute("stroke-dasharray", "3,3");
-          refLines.push(line);
-
-          // Add labels for reference lines
-          const label = document.createElementNS(svg.namespaceURI, "text");
-          label.setAttribute("x", marginX + innerW + 5);
-          label.setAttribute("y", y + 4);
-          label.setAttribute("fill", "#666");
-          label.textContent = `${{level}}ppm`;
-          refLines.push(label);
-        }});
-
-        // Map measurements to timeline positions
-        const vals = data.map(d => d[1]);
-        const pts = data.map(d => {{
-          const [datePart, timePart] = d[0].split(' ');
-          const [hour, minute, second] = timePart.split(':').map(Number);
-          const timeIndex = hour + minute/60 + second/3600;
-          const x = marginX + (timeIndex * innerW / 24);
-          const y = marginY + innerH - ((d[1] - minValue) / (maxValue - minValue)) * innerH;
-          return `${{x}},${{y}}`;
-        }}).join(" ");
-
-        svg.innerHTML = `<g>
-          ${{refLines.map(line => line.outerHTML).join('')}}
-          <polyline points="${{pts}}" stroke="#4caf50" stroke-width="2" fill="none"/>
-        </g>`;
-
-        const title = document.createElementNS(svg.namespaceURI,"text");
-        title.setAttribute("x", W/2);
-        title.setAttribute("y", 25);
-        title.setAttribute("text-anchor", "middle");
-        title.textContent = `CO₂ concentration (ppm) - {pretty_date}`;
-        svg.appendChild(title);
-
-        // Add hour labels
-        hourLabels.forEach(label => svg.appendChild(label));
-      }})();
-    </script>
-  </body>
-</html>"""
+    # Render template
+    template = template_loader.load("chart.tpl")
+    html = "".join(template(
+        title=pretty_date,
+        json_data=json_data,
+        is_weekly=filename.startswith("week")
+    ))
+    
     return html, 200, {"Content-Type": "text/html; charset=utf-8"}
 
 
@@ -671,21 +406,8 @@ async def co2_monitor_loop(max_retries: int = 10):
         await asyncio.sleep(60 * 5)  # Update every 5 minute
 
 
-async def pm25_monitor_loop():
-    """Fetch PM2.5 data from OpenAQ API once per hour"""
-    print("Starting PM2.5 monitor loop...")
-
-    # Fetch initial data
-    fetch_pm25_data()
-
-    while True:
-        await asyncio.sleep(60 * 60)  # Wait 1 hour
-        fetch_pm25_data()
-
-
 async def main():
-    # Start web server, CO2 monitor, and PM2.5 monitor concurrently
-    # await asyncio.gather(start_web_server(), co2_monitor_loop(), pm25_monitor_loop())
+    # Start web server and CO2 monitor concurrently
     await asyncio.gather(start_web_server(), co2_monitor_loop())
 
 
