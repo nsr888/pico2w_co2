@@ -82,18 +82,37 @@ def render(title="CO2 Chart", json_data="[]", is_weekly=False):
             }
             const numDays = fullDateRange.length;
 
-            // Create x-axis labels for the full date range
+            // Create x-axis labels with vertical lines and dates: | 2025-08-08 | 2025-08-09 |
             const dateLabels = [];
             fullDateRange.forEach((dateStr, i) => """
         yield """{
-                const x = marginX + (i * innerW / (numDays - 1 || 1));
+                // Vertical line at day boundary
+                const x = marginX + (i * innerW / numDays);
+                const line = document.createElementNS(svg.namespaceURI,\"text\");
+                line.setAttribute(\"x\", x);
+                line.setAttribute(\"y\", H-15);
+                line.setAttribute(\"text-anchor\", \"middle\");
+                line.textContent = \"|\";
+                dateLabels.push(line);
+                
+                // Date label centered between current and next vertical line
+                const xCenter = marginX + ((i + 0.5) * innerW / numDays);
                 const txt = document.createElementNS(svg.namespaceURI,\"text\");
-                txt.setAttribute(\"x\", x);
+                txt.setAttribute(\"x\", xCenter);
                 txt.setAttribute(\"y\", H-15);
                 txt.setAttribute(\"text-anchor\", \"middle\");
                 txt.textContent = dateStr;
                 dateLabels.push(txt);
             });
+            
+            // Add final vertical line at the end
+            const finalX = marginX + innerW;
+            const finalLine = document.createElementNS(svg.namespaceURI,\"text\");
+            finalLine.setAttribute(\"x\", finalX);
+            finalLine.setAttribute(\"y\", H-15);
+            finalLine.setAttribute(\"text-anchor\", \"middle\");
+            finalLine.textContent = \"|\";
+            dateLabels.push(finalLine);
 
             // Map measurements to timeline positions using the full date range
             const pts = data.map(d => """
