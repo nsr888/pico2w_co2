@@ -31,7 +31,7 @@
             border-radius: 5px;
         }
         .co2-display.warning {
-            border-color: #f44336;
+            border-color: #FFA500;
         }
         .co2-display.danger {
             border-color: #d32f2f;
@@ -41,12 +41,7 @@
             font-size: 2.5em;
             font-weight: bold;
             margin: 5px 0;
-        }
-        .co2-value.warning {
-            color: #f44336;
-        }
-        .co2-value.danger {
-            color: #d32f2f;
+            color: #000000;
         }
         .co2-status {
             font-size: 1.1em;
@@ -73,18 +68,6 @@
         a:hover {
             text-decoration: underline;
         }
-        .api-link {
-            display: inline-block;
-            background: #4caf50;
-            color: white;
-            padding: 8px 16px;
-            margin: 10px 0;
-            border-radius: 3px;
-        }
-        .api-link:hover {
-            background: #45a049;
-            text-decoration: none;
-        }
         h2 {
             color: #333;
             margin: 20px 0 10px 0;
@@ -101,8 +84,8 @@
             background: white;
         }
         th {
-            background: #4caf50;
-            color: white;
+            font-weight: bold;
+            border-bottom: 2px solid #ddd;
             padding: 10px;
             text-align: left;
         }
@@ -117,10 +100,18 @@
             font-size: 0.8em;
             border-radius: 3px;
             white-space: nowrap;
+            border-bottom: 1px solid #ddd;
+            background: #f0f0f0;
+            color: #333;
         }
-        .download { background: #2196f3; color: white; }
-        .delete { background: #f44336; color: white; }
-        .chart { background: #9c27b0; color: white; }
+        .actions a:hover {
+          text-decoration: none;
+          background: #ddd;
+        }
+
+        .download { background: #999; color: white; }
+        .delete { background: #999; color: white; }
+        .chart { background: #999; color: white; }
         .waiting {
             text-align: center;
             padding: 20px;
@@ -137,11 +128,11 @@
 </head>
 <body>
     <div class="container">
-        <h1>🌱 CO2 Monitor</h1>
+        <h1>CO2 Monitor</h1>
         
         {% if current_co2 is not None %}
         <div class="co2-display {% if current_co2 > 1500 %}danger{% elif current_co2 > 1000 %}warning{% endif %}">
-            <div class="co2-value {% if current_co2 > 1500 %}danger{% elif current_co2 > 1000 %}warning{% endif %}">{{current_co2}} ppm</div>
+            <div class="co2-value">{{current_co2}} ppm</div>
             <div class="co2-status">
                 {% if current_co2 > 1500 %}
                 🚨 Action Required
@@ -166,7 +157,6 @@
         </div>
         {% endif %}
 
-        <a href="/co2" class="api-link">JSON API</a>
 
         <h2>Data Files</h2>
         <div class="table-container">
