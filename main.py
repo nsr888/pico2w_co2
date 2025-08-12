@@ -3,6 +3,7 @@ import gc
 import utime
 import os
 import time
+import sys
 
 import network
 import ujson
@@ -13,6 +14,7 @@ from ds3231 import DS3231
 from microdot import Microdot, send_file
 from scd4x import SCD4X
 from utemplate.source import Loader
+from ssd1306 import SSD1306_I2C
 
 _stats = {
     "requests_total": 0,
@@ -24,9 +26,20 @@ print("I2C devices found:", i2c.scan())
 scd = SCD4X(i2c)
 rtc = DS3231(i2c)
 
+# OLED display setup
+display = SSD1306_I2C(128, 32, i2c)
+display.poweron()
+display.fill(0)
+display.show()
+
 # Set default time to DS3231 on startup
 if False:  # Set to True to enable setting time
-    rtc.datetime((2025, 7, 20, 12, 43))
+    rtc.datetime((2025, 8, 12, 21, 12))
+    dt = rtc.datetime()
+    print(
+        f"Timestamp: {dt[0]:04d}-{dt[1]:02d}-{dt[2]:02d} {dt[4]:02d}:{dt[5]:02d}:{dt[6]:02d}"
+    )
+    sys.exit()
 
 # SPI setup for SD card
 spi = SPI(1, baudrate=40000000, sck=Pin(10), mosi=Pin(11), miso=Pin(12))
@@ -99,7 +112,8 @@ for _ in range(20):
     time.sleep(1)
 
 print("Wi-Fi connected:", station.isconnected())
-print("IP address:", station.ifconfig())
+ip_address = station.ifconfig()[0]
+print("IP address:", ip_address)
 
 # Global variables for CO2 readings
 current_co2 = None
@@ -216,7 +230,6 @@ def ensure_weekly_log_file():
     return filename
 
 
-
 def list_files(directory):
     """List all files in a directory"""
     try:
@@ -227,6 +240,27 @@ def list_files(directory):
         ]
     except OSError:
         return []
+
+
+def update_display(co2_value, ip_address):
+    """Update OLED display with CO2 reading and IP address"""
+    display.fill(0)
+
+    # Display CO2 value in large text
+    if co2_value is not None:
+        co2_text = f"CO2: {co2_value}"
+    else:
+        co2_text = "CO2: --"
+
+    # CO2 text uses the full width, centered at the top
+    display.text(co2_text, 0, 0)
+
+    # Display IP address in small font at bottom
+    if ip_address:
+        ip_text = ip_address
+        display.text(ip_text, 0, 20)
+
+    display.show()
 
 
 @app.route("/")
@@ -254,15 +288,17 @@ async def index(request):
         pass
 
     log_files.sort(reverse=True)  # Show newest first
-    
+
     # Render template
     template = template_loader.load("index.tpl")
-    html = "".join(template(
-        current_co2=current_co2,
-        last_measurement_time=last_measurement_time or "",
-        current_time=get_timestamp(),
-        log_files=log_files
-    ))
+    html = "".join(
+        template(
+            current_co2=current_co2,
+            last_measurement_time=last_measurement_time or "",
+            current_time=get_timestamp(),
+            log_files=log_files,
+        )
+    )
 
     return html, 200, {"Content-Type": "text/html"}
 
@@ -334,18 +370,65 @@ async def spark(request, filename):
 
     # Render template
     template = template_loader.load("chart.tpl")
-    html = "".join(template(
-        title=pretty_date,
-        json_data=json_data,
-        is_weekly=filename.startswith("week")
-    ))
-    
+    html = "".join(
+        template(
+            title=pretty_date,
+            json_data=json_data,
+            is_weekly=filename.startswith("week"),
+        )
+    )
+
     return html, 200, {"Content-Type": "text/html; charset=utf-8"}
+
+
+@app.route("/truncate/<filename>")
+async def truncate_csv(request, filename):
+    """Remove last line from a CSV file"""
+    # Security: validate filename is in readings directory only
+    if not (
+        filename.startswith("readings_") or filename.startswith("week")
+    ) or not filename.endswith(".csv"):
+        return (
+            {"success": False, "error": "Invalid filename"},
+            400,
+            {"Content-Type": "application/json"},
+        )
+
+    result = remove_last_line_from_csv(filename)
+    return result, 200, {"Content-Type": "application/json"}
 
 
 @app.route("/status")
 async def status(request):
     return get_system_info(), 200, {"Content-Type": "application/json"}
+
+
+def remove_last_line_from_csv(filename):
+    """Remove exactly one line from the end of a CSV file, preserving header"""
+    full_path = f"/sd/readings/{filename}"
+
+    try:
+        # Read all lines
+        with open(full_path, "r") as f:
+            lines = f.readlines()
+
+        # Check if we have data beyond header
+        if len(lines) <= 1:
+            return {"success": False, "error": "No data lines to remove"}
+
+        # Remove last data line (keep header)
+        del lines[-1]
+
+        # Write back file
+        with open(full_path, "w") as f:
+            f.write("".join(lines))
+
+        return {"success": True, "lines_removed": 1, "file": filename}
+
+    except OSError:
+        return {"success": False, "error": "File not found"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 
 def get_system_info():
@@ -402,11 +485,17 @@ async def co2_monitor_loop(max_retries: int = 10):
         global last_measurement_time
         last_measurement_time = ts
 
+        # Update display with latest CO2 reading and IP
+        update_display(current_co2, ip_address)
+
         print("System info:", get_system_info())
         await asyncio.sleep(60 * 5)  # Update every 5 minute
 
 
 async def main():
+    # Show IP address on display once connected
+    update_display("----", ip_address)
+
     # Start web server and CO2 monitor concurrently
     await asyncio.gather(start_web_server(), co2_monitor_loop())
 
