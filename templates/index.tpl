@@ -172,7 +172,6 @@
                     <td>{{size}} bytes</td>
                     <td class="actions">
                         <a href="/download/{{filename}}" class="download">Download</a>
-                        <a href="/delete/{{filename}}" class="delete" onclick="return confirm('Delete {{filename}}?')">Delete</a>
                         {% if filename.startswith("week") %}
                         <a href="/spark/{{filename}}" class="chart">Weekly Chart</a>
                         {% else %}

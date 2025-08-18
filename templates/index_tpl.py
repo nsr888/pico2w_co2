@@ -229,11 +229,6 @@ def render(current_co2=None, last_measurement_time="", current_time="", log_file
                         <a href=\"/download/"""
         yield str(filename)
         yield """\" class=\"download\">Download</a>
-                        <a href=\"/delete/"""
-        yield str(filename)
-        yield """\" class=\"delete\" onclick=\"return confirm('Delete """
-        yield str(filename)
-        yield """?')\">Delete</a>
                         """
         if filename.startswith("week"):
             yield """                        <a href=\"/spark/"""
