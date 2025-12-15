@@ -51,32 +51,6 @@ os.mount(sd, "/sd")
 scd.start_periodic_measurement()
 
 
-# Ensure readings directory exists and CSV file exists with header
-def get_current_log_filename():
-    """Generate filename with current datetime suffix"""
-    dt = rtc.datetime()
-    return f"/sd/readings/readings_{dt[0]:04d}{dt[1]:02d}{dt[2]:02d}.csv"
-
-
-def ensure_log_file():
-    """Ensure readings directory exists and current hour's log file exists with header"""
-    # Create readings directory if it doesn't exist
-    try:
-        os.mkdir("/sd/readings")
-    except OSError as e:
-        if e.errno != 17:  # 17 is EEXIST (directory already exists)
-            raise
-
-    filename = get_current_log_filename()
-    try:
-        with open(filename, "r") as f:
-            pass
-    except OSError:
-        with open(filename, "w") as f:
-            f.write("time,co2\n")
-    return filename
-
-
 asyncio.sleep(10)  # Give time for I2C and SPI to initialize
 
 # WiFi connection
@@ -275,9 +249,7 @@ async def index(request):
 
         for file in files:
             try:
-                if (
-                    file.startswith("readings_") or file.startswith("week")
-                ) and file.endswith(".csv"):
+                if file.startswith("week") and file.endswith(".csv"):
                     stat = os.stat(f"/sd/readings/{file}")
                     size = stat[6]
                     log_files.append((file, size))
@@ -358,15 +330,8 @@ async def spark(request, filename):
 
     json_data = ujson.dumps(data)
 
-    # Handle different filename formats for pretty date display
-    if filename.startswith("readings_"):
-        date_part = filename[9:17]
-        pretty_date = f"{date_part[0:4]}-{date_part[4:6]}-{date_part[6:8]}"
-    elif filename.startswith("week"):
-        # For weekly files, just show the filename without extension
-        pretty_date = filename[:-4]  # Remove .csv extension
-    else:
-        pretty_date = filename[:-4]  # Fallback: remove .csv extension
+    # For weekly files, show the filename without extension
+    pretty_date = filename[:-4]  # Remove .csv extension
 
     # Render template
     template = template_loader.load("chart.tpl")
@@ -374,7 +339,7 @@ async def spark(request, filename):
         template(
             title=pretty_date,
             json_data=json_data,
-            is_weekly=filename.startswith("week"),
+            is_weekly=True,
         )
     )
 
@@ -385,9 +350,7 @@ async def spark(request, filename):
 async def truncate_csv(request, filename):
     """Remove last line from a CSV file"""
     # Security: validate filename is in readings directory only
-    if not (
-        filename.startswith("readings_") or filename.startswith("week")
-    ) or not filename.endswith(".csv"):
+    if not filename.startswith("week") or not filename.endswith(".csv"):
         return (
             {"success": False, "error": "Invalid filename"},
             400,
@@ -466,11 +429,6 @@ async def co2_monitor_loop(max_retries: int = 10):
         co2 = scd.co2
         current_co2 = co2  # Update global variable
         print(f"CO2: {co2} ppm")
-
-        # Log to SD card in daily rotated file
-        log_filename = ensure_log_file()
-        with open(log_filename, "a") as f:
-            f.write(f"{ts},{co2}\n")
 
         # Log to weekly file with hourly granularity
         if should_log_weekly():

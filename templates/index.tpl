@@ -172,11 +172,7 @@
                     <td>{{size}} bytes</td>
                     <td class="actions">
                         <a href="/download/{{filename}}" class="download">Download</a>
-                        {% if filename.startswith("week") %}
-                        <a href="/spark/{{filename}}" class="chart">Weekly Chart</a>
-                        {% else %}
-                        <a href="/spark/{{filename}}" class="chart">Daily Chart</a>
-                        {% endif %}
+                        <a href="/spark/{{filename}}" class="chart">Chart</a>
                     </td>
                 </tr>
                 {% endfor %}

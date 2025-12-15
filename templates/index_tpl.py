@@ -229,18 +229,10 @@ def render(current_co2=None, last_measurement_time="", current_time="", log_file
                         <a href=\"/download/"""
         yield str(filename)
         yield """\" class=\"download\">Download</a>
-                        """
-        if filename.startswith("week"):
-            yield """                        <a href=\"/spark/"""
-            yield str(filename)
-            yield """\" class=\"chart\">Weekly Chart</a>
-                        """
-        else:
-            yield """                        <a href=\"/spark/"""
-            yield str(filename)
-            yield """\" class=\"chart\">Daily Chart</a>
-                        """
-        yield """                    </td>
+                        <a href=\"/spark/"""
+        yield str(filename)
+        yield """\" class=\"chart\">Chart</a>
+                    </td>
                 </tr>
                 """
     yield """            </table>
