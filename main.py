@@ -216,23 +216,43 @@ def list_files(directory):
         return []
 
 
-def update_display(co2_value, ip_address):
-    """Update OLED display with CO2 reading and IP address"""
+def text_2x(display, text, x, y):
+    """Draw text at 2x scale by rendering to temp buffer and scaling up"""
+    import framebuf
+    # Create a small buffer for the text (8 pixels high, 8 pixels per char)
+    text_width = len(text) * 8
+    buf = bytearray(text_width)  # 1 bit per pixel, 8 rows
+    fb = framebuf.FrameBuffer(buf, text_width, 8, framebuf.MONO_VLSB)
+    fb.fill(0)
+    fb.text(text, 0, 0, 1)
+
+    # Scale up 2x and draw to display
+    for py in range(8):
+        for px in range(text_width):
+            if fb.pixel(px, py):
+                # Draw 2x2 block for each pixel
+                display.pixel(x + px * 2, y + py * 2, 1)
+                display.pixel(x + px * 2 + 1, y + py * 2, 1)
+                display.pixel(x + px * 2, y + py * 2 + 1, 1)
+                display.pixel(x + px * 2 + 1, y + py * 2 + 1, 1)
+
+
+def update_display(co2_value, ip_address=None):
+    """Update OLED display with CO2 reading in large font"""
     display.fill(0)
 
-    # Display CO2 value in large text
+    # Format CO2 text (no space to fit 8 chars at 2x = 128px)
     if co2_value is not None:
-        co2_text = f"CO2: {co2_value}"
+        co2_text = f"CO2:{co2_value}"
     else:
-        co2_text = "CO2: --"
+        co2_text = "CO2:----"
 
-    # CO2 text uses the full width, centered at the top
-    display.text(co2_text, 0, 0)
+    # Center vertically: (32 - 16) / 2 = 8
+    # Center horizontally based on text length
+    text_width = len(co2_text) * 16  # 2x scale = 16px per char
+    x_pos = (128 - text_width) // 2
 
-    # Display IP address in small font at bottom
-    if ip_address:
-        ip_text = ip_address
-        display.text(ip_text, 0, 20)
+    text_2x(display, co2_text, x_pos, 8)
 
     display.show()
 
